@@ -16,6 +16,8 @@
 
 ```bash
 curl -O https://raw.githubusercontent.com/ccpopy/antissh/main/antissh.sh
+# 或者加速下载
+# curl -O https://ghproxy.net/https://raw.githubusercontent.com/ccpopy/antissh/main/antissh.sh
 chmod +x antissh.sh
 ```
 
@@ -72,3 +74,8 @@ mv /path/to/language_server_xxx.bak /path/to/language_server_xxx
 
 - **Go**: >= 1.13（脚本会自动安装）
 - **Git, Make, GCC**（脚本会自动安装）
+
+## 鸣谢
+
+- [graftcp](https://github.com/klzgrad/graftcp)
+- [思路来源](https://www.v2ex.com/t/1174113)
