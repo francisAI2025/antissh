@@ -356,7 +356,7 @@ detect_pkg_manager() {
   fi
 }
 
-# 全局变量：是否需要兼容旧版本 Go（移除 toolchain 指令）
+# 全局变量：是否需要兼容旧版本 Go，兼容模式将移除 toolchain 指令
 NEED_GO_COMPAT="false"
 
 check_go_version() {
@@ -387,13 +387,12 @@ check_go_version() {
     echo "============================================="
     echo ""
     echo " graftcp 项目使用了 Go 1.21+ 的 toolchain 指令。"
-    echo " 当前版本可以通过兼容模式编译，但建议升级到 Go 1.21+。"
+    echo " 当前版本可以通过兼容模式编译，如果兼容模式编译后 graftcp 运行失败，请升级到 Go 1.21+。"
     echo ""
     echo " 升级 Go 的影响："
     echo "   ✓ 更好的性能和安全性"
     echo "   ✓ 原生支持新版 go.mod 语法"
-    echo "   ✗ 可能影响系统上依赖旧版 Go 的其他项目"
-    echo "   ✗ 需要下载约 150MB 的 Go 安装包"
+    echo "   ✗ 注意：可能影响系统上依赖旧版 Go 的其他项目！！！"
     echo ""
     echo " 不升级（兼容模式）："
     echo "   ✓ 不影响现有环境"
@@ -426,7 +425,7 @@ upgrade_go_version() {
     *)       error "不支持的系统架构：$(uname -m)" ;;
   esac
   
-  # 获取最新 Go 版本号（从官方 API）
+  # 获取最新 Go 版本号
   log "获取最新 Go 版本..."
   local latest_version
   latest_version=$(curl -sL "https://go.dev/VERSION?m=text" 2>/dev/null | head -1)
@@ -440,18 +439,42 @@ upgrade_go_version() {
   log "将安装 Go 版本：${latest_version}"
   
   local go_tar="${latest_version}.linux-${arch}.tar.gz"
-  local download_url="https://go.dev/dl/${go_tar}"
   local tmp_dir="${INSTALL_ROOT}/tmp"
   
   mkdir -p "${tmp_dir}"
   
-  # 下载 Go
-  log "下载 ${download_url}..."
-  if ! curl -L -o "${tmp_dir}/${go_tar}" "${download_url}"; then
-    error "下载 Go 失败，请检查网络连接。"
+  # 下载 Go（优先使用国内镜像加速）
+  local download_urls=(
+    "https://mirrors.aliyun.com/golang/${go_tar}" # 阿里云镜像
+    "https://golang.google.cn/dl/${go_tar}"       # Google 中国镜像
+    "https://go.dev/dl/${go_tar}"                 # 官方源（备用）
+  )
+  
+  local download_success="false"
+  for url in "${download_urls[@]}"; do
+    log "尝试下载：${url}"
+    if curl -L --connect-timeout 10 --max-time 300 -o "${tmp_dir}/${go_tar}" "${url}" 2>/dev/null; then
+      # 验证下载的文件是否有效（检查文件大小 > 50MB）
+      local file_size
+      file_size=$(stat -c%s "${tmp_dir}/${go_tar}" 2>/dev/null || echo "0")
+      if [ "${file_size}" -gt 50000000 ]; then
+        log "下载成功：${url}"
+        download_success="true"
+        break
+      else
+        warn "下载的文件无效，尝试下一个镜像..."
+        rm -f "${tmp_dir}/${go_tar}"
+      fi
+    else
+      warn "下载失败，尝试下一个镜像..."
+    fi
+  done
+  
+  if [ "${download_success}" != "true" ]; then
+    error "所有镜像均下载失败，请检查网络连接。"
   fi
   
-  # 备份旧版本（如果存在）
+  # 备份旧版本
   if [ -d "/usr/local/go" ]; then
     log "备份旧版 Go 到 /usr/local/go.bak..."
     ${SUDO} rm -rf /usr/local/go.bak 2>/dev/null || true
@@ -462,7 +485,7 @@ upgrade_go_version() {
   log "安装 Go 到 /usr/local/go..."
   ${SUDO} tar -C /usr/local -xzf "${tmp_dir}/${go_tar}"
   
-  # 更新 PATH（如果需要）
+  # 更新 PATH
   if ! echo "${PATH}" | grep -q "/usr/local/go/bin"; then
     export PATH="/usr/local/go/bin:${PATH}"
     log "已临时添加 /usr/local/go/bin 到 PATH"
