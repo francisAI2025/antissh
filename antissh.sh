@@ -461,6 +461,15 @@ install_graftcp() {
     GOPROXY_ENV=""
   fi
 
+  # 兼容旧版本 Go：删除 go.mod 中的 toolchain 指令（Go 1.21+ 新增，旧版本无法识别）
+  log "检查并移除 go.mod 中的 toolchain 指令（兼容 Go < 1.21）..."
+  for gomod in go.mod local/go.mod; do
+    if [ -f "${gomod}" ] && grep -q '^toolchain' "${gomod}"; then
+      log "  移除 ${gomod} 中的 toolchain 行"
+      sed -i '/^toolchain/d' "${gomod}"
+    fi
+  done
+
   log "开始编译 graftcp（日志写入：${INSTALL_LOG}）..."
   if ! env ${GOPROXY_ENV} make >> "${INSTALL_LOG}" 2>&1; then
     error "graftcp 编译失败，请检查 Go 环境或网络，详情见 ${INSTALL_LOG}。"
