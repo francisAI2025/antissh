@@ -414,6 +414,39 @@ check_go_version() {
 
 # 升级 Go 到最新稳定版
 upgrade_go_version() {
+  # 权限预检查
+  if [ -d "/usr/local/go" ]; then
+    # 检查是否有写入权限
+    if [ "$(id -u)" -ne 0 ]; then
+      if ! command -v sudo >/dev/null 2>&1; then
+        echo ""
+        echo "❌ 升级 Go 需要 root 权限，但系统未安装 sudo"
+        echo ""
+        echo "解决方法："
+        echo "  1. 使用 root 用户运行此脚本"
+        echo "  2. 或安装 sudo 后重试"
+        echo "  3. 或手动升级 Go：https://go.dev/doc/install"
+        echo ""
+        echo "将使用兼容模式继续（不升级 Go）..."
+        NEED_GO_COMPAT="true"
+        return
+      fi
+      # 测试 sudo 是否可用
+      if ! sudo -n true 2>/dev/null; then
+        echo ""
+        echo "⚠️ 升级 Go 需要 sudo 权限"
+        echo "   请在接下来的提示中输入密码，或按 Ctrl+C 取消"
+        echo ""
+        if ! sudo true; then
+          echo ""
+          echo "❌ 无法获取 sudo 权限，将使用兼容模式继续..."
+          NEED_GO_COMPAT="true"
+          return
+        fi
+      fi
+    fi
+  fi
+  
   log "开始升级 Go..."
   
   # 检测系统架构
@@ -579,12 +612,64 @@ install_graftcp() {
   log "开始安装 graftcp 到：${GRAFTCP_DIR}"
   mkdir -p "${GRAFTCP_DIR}"
 
+  # 检测是否存在不完整的安装（目录存在但没有 .git 或关键文件缺失）
+  if [ -d "${GRAFTCP_DIR}" ] && [ ! -d "${GRAFTCP_DIR}/.git" ] && [ "$(ls -A "${GRAFTCP_DIR}" 2>/dev/null)" ]; then
+    warn "检测到不完整的安装状态，正在清理..."
+    rm -rf "${GRAFTCP_DIR}"
+    mkdir -p "${GRAFTCP_DIR}"
+  fi
+
   if [ ! -d "${GRAFTCP_DIR}/.git" ]; then
     log "克隆 graftcp 仓库..."
-    git clone https://github.com/hmgle/graftcp.git "${GRAFTCP_DIR}" | tee -a "${INSTALL_LOG}"
+    
+    # 重试逻辑：最多尝试 3 次
+    local max_retries=3
+    local retry_count=0
+    local clone_success="false"
+    
+    while [ "${retry_count}" -lt "${max_retries}" ]; do
+      retry_count=$((retry_count + 1))
+      
+      if [ "${retry_count}" -gt 1 ]; then
+        log "第 ${retry_count} 次尝试克隆...（共 ${max_retries} 次）"
+        # 清理可能的残留
+        rm -rf "${GRAFTCP_DIR}"
+        mkdir -p "${GRAFTCP_DIR}"
+        # 等待一段时间后重试
+        sleep 2
+      fi
+      
+      # 尝试使用国内镜像加速
+      local clone_urls=(
+        "https://github.com/hmgle/graftcp.git"          # 官方源
+        "https://ghproxy.net/https://github.com/hmgle/graftcp.git"  # 代理镜像
+      )
+      
+      for url in "${clone_urls[@]}"; do
+        log "尝试从 ${url} 克隆..."
+        if git clone --depth 1 "${url}" "${GRAFTCP_DIR}" 2>&1 | tee -a "${INSTALL_LOG}"; then
+          # 验证克隆是否完整
+          if [ -d "${GRAFTCP_DIR}/.git" ] && [ -f "${GRAFTCP_DIR}/Makefile" ]; then
+            clone_success="true"
+            log "仓库克隆成功"
+            break 2  # 跳出两层循环
+          else
+            warn "克隆不完整，清理后重试..."
+            rm -rf "${GRAFTCP_DIR}"
+            mkdir -p "${GRAFTCP_DIR}"
+          fi
+        else
+          warn "从 ${url} 克隆失败"
+        fi
+      done
+    done
+    
+    if [ "${clone_success}" != "true" ]; then
+      error "graftcp 仓库克隆失败（已尝试 ${max_retries} 次），请检查网络连接后重试。"
+    fi
   else
     log "检测到已有 graftcp 仓库，尝试更新..."
-    (cd "${GRAFTCP_DIR}" && git pull --ff-only | tee -a "${INSTALL_LOG}") || warn "graftcp 仓库更新失败，继续使用当前版本。"
+    (cd "${GRAFTCP_DIR}" && git pull --ff-only 2>&1 | tee -a "${INSTALL_LOG}") || warn "graftcp 仓库更新失败，继续使用当前版本。"
   fi
 
   cd "${GRAFTCP_DIR}" || error "无法进入目录：${GRAFTCP_DIR}"
@@ -629,8 +714,63 @@ install_graftcp() {
   done
 
   log "开始编译 graftcp（日志写入：${INSTALL_LOG}）..."
-  if ! env ${GOPROXY_ENV} make >> "${INSTALL_LOG}" 2>&1; then
-    error "graftcp 编译失败，请检查 Go 环境或网络，详情见 ${INSTALL_LOG}。"
+  
+  # 编译重试逻辑
+  local make_retries=2
+  local make_count=0
+  local make_success="false"
+  
+  while [ "${make_count}" -lt "${make_retries}" ]; do
+    make_count=$((make_count + 1))
+    
+    if [ "${make_count}" -gt 1 ]; then
+      log "第 ${make_count} 次尝试编译...（共 ${make_retries} 次）"
+      # 清理之前的编译产物
+      make clean >> "${INSTALL_LOG}" 2>&1 || true
+      sleep 1
+    fi
+    
+    if env ${GOPROXY_ENV} make >> "${INSTALL_LOG}" 2>&1; then
+      make_success="true"
+      break
+    else
+      warn "编译失败，正在分析原因..."
+      
+      # 检查常见错误
+      if tail -20 "${INSTALL_LOG}" | grep -q "go: module download"; then
+        warn "Go 模块下载失败，可能是网络问题"
+      elif tail -20 "${INSTALL_LOG}" | grep -q "toolchain"; then
+        warn "检测到 toolchain 相关错误，尝试移除..."
+        for gomod in go.mod local/go.mod; do
+          if [ -f "${gomod}" ]; then
+            sed -i '/^toolchain/d' "${gomod}" 2>/dev/null || true
+          fi
+        done
+      elif tail -20 "${INSTALL_LOG}" | grep -q "permission denied"; then
+        warn "权限不足"
+      fi
+    fi
+  done
+  
+  if [ "${make_success}" != "true" ]; then
+    echo ""
+    echo "❌ graftcp 编译失败（已尝试 ${make_retries} 次）"
+    echo ""
+    echo "可能原因："
+    echo "  1. Go 依赖下载失败（网络问题）"
+    echo "  2. Go 版本过低或不兼容"
+    echo "  3. 缺少编译工具（gcc/make）"
+    echo ""
+    echo "解决建议："
+    echo "  1. 检查网络连接，确保能访问 github.com 或 goproxy.cn"
+    echo "  2. 手动升级 Go 到 1.21+：https://go.dev/doc/install"
+    echo "  3. 查看详细日志：${INSTALL_LOG}"
+    echo ""
+    # 显示日志最后几行帮助诊断
+    echo "日志最后 10 行："
+    tail -10 "${INSTALL_LOG}" 2>/dev/null || true
+    echo ""
+    error "编译失败，请根据上述提示排查问题。"
   fi
 
   if [ ! -x "${GRAFTCP_DIR}/graftcp" ] || [ ! -x "${GRAFTCP_DIR}/local/graftcp-local" ]; then

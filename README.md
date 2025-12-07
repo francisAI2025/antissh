@@ -56,17 +56,31 @@ mv /path/to/language_server_xxx.bak /path/to/language_server_xxx
 
 由于 graftcp 依赖 Linux 的 `ptrace` 系统调用，在 macOS/Windows 上无法使用。
 
-### 推荐方案 1：Proxifier
+### 推荐方案 1：Proxifier（推荐）
 
 1. 下载安装 [Proxifier](https://www.proxifier.com/)
-2. 添加代理服务器：`Profile` → `Proxy Servers` → `Add`
+   - 关于 license key，请自行搜索，有特别版序列号，如有能力请支持正版
+2. 添加代理服务器：
+   - `Profile` → `Proxy Servers` → `Add`
+   - 填入你的代理地址
 3. 添加规则：`Profile` → `Proxification Rules` → `Add`
-   - 应用程序选择 `language_server_*`
+   - 应用程序添加以下内容（根据系统选择）：
+     - macOS: `com.google.antigravity.helper; com.google.antigravity; Antigravity; language_server_macos_arm; language_server_macos_x64`
+     - Windows: `language_server_windows_x64.exe; Antigravity.exe`
    - Action 选择刚添加的代理
 
 ### 推荐方案 2：TUN 模式
 
 使用 Clash、Surge 等工具开启 TUN 模式，实现全局透明代理。
+
+### 方案 3：环境变量（不推荐）
+
+Agent 服务可能无法走代理，仅供参考：
+
+```bash
+export ALL_PROXY=socks5://127.0.0.1:10808
+export HTTPS_PROXY=http://127.0.0.1:10809
+```
 
 ---
 
