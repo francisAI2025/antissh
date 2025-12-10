@@ -1038,7 +1038,33 @@ test_proxy() {
     fi
 
     if [ "${is_graftcp_local}" = "true" ]; then
-      log "端口 ${GRAFTCP_LOCAL_PORT} 已被 graftcp-local 服务占用，将直接进行代理测试"
+      # 已有 graftcp-local 在运行，但可能使用的是旧的代理配置
+      # 需要停止旧服务，用新的代理配置重启
+      log "端口 ${GRAFTCP_LOCAL_PORT} 已被 graftcp-local 服务占用"
+      log "将停止现有服务并使用新的代理配置重启..."
+      
+      # 停止现有的 graftcp-local
+      kill "${port_pid}" 2>/dev/null || true
+      sleep 0.5
+      
+      # 用新的代理配置启动 graftcp-local
+      if [ "${PROXY_TYPE}" = "http" ]; then
+        "${GRAFTCP_DIR}/local/graftcp-local" -http_proxy="${PROXY_URL}" -select_proxy_mode=only_http_proxy &
+      else
+        "${GRAFTCP_DIR}/local/graftcp-local" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
+      fi
+      local graftcp_local_pid=$!
+      local need_kill_graftcp_local="true"
+      sleep 1
+      
+      # 检查 graftcp-local 是否成功启动
+      if ! kill -0 "${graftcp_local_pid}" 2>/dev/null; then
+        warn "graftcp-local 重启失败"
+        echo ""
+        echo "❌ 代理测试失败：graftcp-local 无法重启"
+        echo ""
+        exit 1
+      fi
     else
       echo ""
       echo "❌ 代理测试失败：端口 ${GRAFTCP_LOCAL_PORT} 被其他进程占用"
@@ -1069,6 +1095,7 @@ test_proxy() {
       "${GRAFTCP_DIR}/local/graftcp-local" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
     fi
     local graftcp_local_pid=$!
+    local need_kill_graftcp_local="true"
     sleep 1
 
     # 检查 graftcp-local 是否成功启动
@@ -1089,12 +1116,34 @@ test_proxy() {
   # 使用 graftcp 测试访问 google.com
   log "测试通过代理访问 google.com..."
   
-  # 获取 HTTP 状态码
-  local http_code
-  http_code=$("${GRAFTCP_DIR}/graftcp" curl -s --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
+  # 等待 graftcp-local 完全初始化并与代理建立连接
+  sleep 2
   
-  # 停止测试用的 graftcp-local
-  kill "${graftcp_local_pid}" 2>/dev/null || true
+  # 获取 HTTP 状态码（带重试逻辑）
+  local http_code="000"
+  local retry_count=0
+  local max_retries=3
+  
+  while [ "${retry_count}" -lt "${max_retries}" ]; do
+    retry_count=$((retry_count + 1))
+    
+    if [ "${retry_count}" -gt 1 ]; then
+      log "第 ${retry_count} 次尝试测试代理..."
+      sleep 1
+    fi
+    
+    http_code=$("${GRAFTCP_DIR}/graftcp" curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
+    
+    # 如果成功，跳出循环
+    if [ "${http_code}" = "200" ] || [ "${http_code}" = "301" ] || [ "${http_code}" = "302" ]; then
+      break
+    fi
+  done
+  
+  # 只有当我们启动了 graftcp-local 时才停止它
+  if [ "${need_kill_graftcp_local:-}" = "true" ]; then
+    kill "${graftcp_local_pid}" 2>/dev/null || true
+  fi
   
   # 判断测试结果
   if [ "${http_code}" = "200" ] || [ "${http_code}" = "301" ] || [ "${http_code}" = "302" ]; then
