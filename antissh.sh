@@ -1182,9 +1182,9 @@ fi
 # 1. 强制使用系统 DNS (解决解析问题)
 # 2. 关闭 HTTP/2 客户端 (解决 EOF 等问题)
 if [ -n "\${GODEBUG:-}" ]; then
-  export GODEBUG="\$GODEBUG,netdns=cgo,http2client=0"
+  export GODEBUG="\$GODEBUG,netdns=cgo,http2client=0,tls13=0"
 else
-  export GODEBUG="netdns=cgo,http2client=0"
+  export GODEBUG="netdns=cgo,http2client=0,tls13=0"
 fi
 
 # 使用 graftcp 启动备份的原始 Agent 服务
