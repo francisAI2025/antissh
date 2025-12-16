@@ -1179,7 +1179,7 @@ setup_wrapper() {
   
   cat > "${wrapper_tmp}" <<EOF
 #!/usr/bin/env bash
-# 该文件由 antigravity-set.sh 自动生成
+# 该文件由 antissh.sh 自动生成
 # 用 graftcp 代理启动原始 Antigravity Agent
 
 GRAFTCP_DIR="${GRAFTCP_DIR}"
