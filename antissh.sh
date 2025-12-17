@@ -32,6 +32,148 @@ BACKUP_BIN=""  # 备份路径 = ${TARGET_BIN}.bak
 GRAFTCP_LOCAL_PORT=""  # graftcp-local 监听端口（默认 2233）
 GRAFTCP_PIPE_PATH=""   # graftcp-local FIFO 路径（多实例支持）
 
+################################ 安全设置 ################################
+
+# 设置 umask 确保新建文件权限安全 (600 for files, 700 for dirs)
+umask 077
+
+################################ Bash 版本检查 ################################
+
+check_bash_version() {
+  local major="${BASH_VERSINFO[0]:-0}"
+
+  if [ "${major}" -lt 4 ]; then
+    echo ""
+    echo "============================================="
+    echo " ❌ Bash 版本过低"
+    echo "============================================="
+    echo ""
+    echo " 当前 Bash 版本：${BASH_VERSION:-unknown}"
+    echo " 本脚本要求：Bash >= 4.0"
+    echo ""
+    echo " 本脚本使用了以下 Bash 4+ 特性："
+    echo "   - declare -A（关联数组）"
+    echo "   - mapfile（数组读取）"
+    echo "   - 进程替换 <(...)"
+    echo ""
+    echo " 升级建议："
+    echo "   Ubuntu/Debian: sudo apt-get install bash"
+    echo "   CentOS/RHEL:   sudo yum install bash"
+    echo "   从源码编译:    https://www.gnu.org/software/bash/"
+    echo ""
+    exit 1
+  fi
+}
+
+# 立即执行 Bash 版本检查
+check_bash_version
+
+################################ 兼容性 Helper 函数 ################################
+
+# 获取文件修改时间（epoch 秒）
+# 成功返回 epoch，失败返回空字符串
+get_file_mtime() {
+  local file="$1"
+  # GNU stat
+  stat -c '%Y' -- "${file}" 2>/dev/null && return 0
+  # 降级：返回空
+  echo ""
+  return 1
+}
+
+# 将 epoch 时间戳格式化为人类可读日期
+# 失败返回 "unknown"
+format_date_from_epoch() {
+  local epoch="$1"
+  # GNU date
+  date -d "@${epoch}" '+%F %T %z' 2>/dev/null && return 0
+  # 降级
+  echo "unknown"
+  return 1
+}
+
+# 原地编辑文件（兼容处理）
+sed_inplace() {
+  local pattern="$1"
+  local file="$2"
+  if sed -i "${pattern}" "${file}" 2>/dev/null; then
+    return 0
+  fi
+  warn "sed -i 失败，请检查 sed 版本"
+  return 1
+}
+
+# 安全删除：检查路径非空且在 INSTALL_ROOT 下
+safe_rm_rf() {
+  local target="$1"
+  if [ -z "${target}" ]; then
+    warn "safe_rm_rf: 目标路径为空，跳过删除"
+    return 1
+  fi
+  if [ -z "${INSTALL_ROOT}" ]; then
+    warn "safe_rm_rf: INSTALL_ROOT 未设置，跳过删除"
+    return 1
+  fi
+  case "${target}" in
+    "${INSTALL_ROOT}"|"${INSTALL_ROOT}/"*)
+      rm -rf "${target}"
+      return $?
+      ;;
+    *)
+      warn "safe_rm_rf: 路径 ${target} 不在 ${INSTALL_ROOT} 下，拒绝删除"
+      return 1
+      ;;
+  esac
+}
+
+# 创建安全临时文件
+# 用法：wrapper_tmp=$(safe_mktemp "${prefix}")
+safe_mktemp() {
+  local prefix="$1"
+  if command -v mktemp >/dev/null 2>&1; then
+    mktemp "${prefix}.XXXXXX" && return 0
+  fi
+  # fallback
+  local tmp="${prefix}.$$.$RANDOM"
+  : > "${tmp}" && echo "${tmp}" && return 0
+  return 1
+}
+
+# 检查端口是否被占用（不依赖 root 获取 PID）
+# 返回：0 = 被占用，1 = 未被占用
+# 设置变量：PORT_OCCUPIED_BY_GRAFTCP
+PORT_OCCUPIED_BY_GRAFTCP="false"
+check_port_occupied() {
+  local port="$1"
+  PORT_OCCUPIED_BY_GRAFTCP="false"
+  local occupied="false"
+
+  # ss 不需要 root 就能判断是否占用
+  if command -v ss >/dev/null 2>&1; then
+    if ss -tln 2>/dev/null | grep -q ":${port} "; then
+      occupied="true"
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -tln 2>/dev/null | grep -q ":${port} "; then
+      occupied="true"
+    fi
+  fi
+
+  if [ "${occupied}" = "false" ]; then
+    return 1
+  fi
+
+  # 检查是否是 graftcp-local（通过 FIFO 路径和 pgrep）
+  if [ -e "${INSTALL_ROOT}/graftcp-local-${port}.fifo" ]; then
+    if command -v pgrep >/dev/null 2>&1; then
+      if pgrep -f "graftcp-local.*:${port}" >/dev/null 2>&1; then
+        PORT_OCCUPIED_BY_GRAFTCP="true"
+      fi
+    fi
+  fi
+  return 0
+}
+
 ################################ 日志输出 ################################
 
 log() {
@@ -428,36 +570,17 @@ ask_graftcp_port() {
       continue
     fi
     
-    # 检查端口占用情况
-    local port_pid=""
-    local port_process=""
-    
-    if command -v ss >/dev/null 2>&1; then
-      port_pid=$(ss -tlnp 2>/dev/null | grep ":${port_input} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
-    elif command -v netstat >/dev/null 2>&1; then
-      port_pid=$(netstat -tlnp 2>/dev/null | grep ":${port_input} " | awk '{print $7}' | cut -d'/' -f1 | head -1)
-    fi
-    
-    if [ -n "${port_pid}" ]; then
-      port_process=$(ps -p "${port_pid}" -o comm= 2>/dev/null || echo "unknown")
-      
-      # 检查是否是 graftcp-local
-      local is_graftcp="false"
-      if [ "${port_process}" = "graftcp-local" ]; then
-        is_graftcp="true"
-      elif ps -p "${port_pid}" -o args= 2>/dev/null | grep -q "graftcp-local"; then
-        is_graftcp="true"
-      fi
-      
-      if [ "${is_graftcp}" = "true" ]; then
+    # 使用改进的端口检测（不依赖 root 权限获取 PID）
+    if check_port_occupied "${port_input}"; then
+      # 端口被占用
+      if [ "${PORT_OCCUPIED_BY_GRAFTCP}" = "true" ]; then
         log "端口 ${port_input} 已被 graftcp-local 服务占用，将复用现有服务"
         GRAFTCP_LOCAL_PORT="${port_input}"
         break
       else
         echo ""
         echo "❌ 端口 ${port_input} 已被其他服务占用"
-        echo "   PID: ${port_pid}"
-        echo "   进程: ${port_process}"
+        echo "   （提示：非 root 用户可能无法获取占用进程详情）"
         echo ""
         echo "请输入其他端口号"
         continue
@@ -682,7 +805,7 @@ upgrade_go_version() {
     if curl -L --connect-timeout 10 --max-time 300 -o "${tmp_dir}/${go_tar}" "${url}" 2>/dev/null; then
       # 验证下载的文件是否有效，检查文件大小是否大于 50MB
       local file_size
-      file_size=$(stat -c%s "${tmp_dir}/${go_tar}" 2>/dev/null || echo "0")
+      file_size=$(stat -c%s "${tmp_dir}/${go_tar}" 2>/dev/null || wc -c < "${tmp_dir}/${go_tar}" 2>/dev/null || echo "0")
       if [ "${file_size}" -gt 50000000 ]; then
         log "下载成功：${url}"
         download_success="true"
@@ -872,7 +995,7 @@ install_graftcp() {
   # 检测是否存在不完整的安装（目录存在但没有 .git 或关键文件缺失）
   if [ -d "${GRAFTCP_DIR}" ] && [ ! -d "${GRAFTCP_DIR}/.git" ] && [ "$(ls -A "${GRAFTCP_DIR}" 2>/dev/null)" ]; then
     warn "检测到不完整的安装状态，正在清理..."
-    rm -rf "${GRAFTCP_DIR}"
+    safe_rm_rf "${GRAFTCP_DIR}"
     mkdir -p "${GRAFTCP_DIR}"
   fi
 
@@ -890,7 +1013,7 @@ install_graftcp() {
       if [ "${retry_count}" -gt 1 ]; then
         log "第 ${retry_count} 次尝试克隆...（共 ${max_retries} 次）"
         # 清理可能的残留
-        rm -rf "${GRAFTCP_DIR}"
+        safe_rm_rf "${GRAFTCP_DIR}"
         mkdir -p "${GRAFTCP_DIR}"
         # 等待一段时间后重试
         sleep 2
@@ -915,7 +1038,7 @@ install_graftcp() {
             break 2
           else
             warn "克隆不完整，清理后重试..."
-            rm -rf "${GRAFTCP_DIR}"
+            safe_rm_rf "${GRAFTCP_DIR}"
             mkdir -p "${GRAFTCP_DIR}"
           fi
         else
@@ -951,7 +1074,7 @@ install_graftcp() {
     for gomod in go.mod local/go.mod; do
       if [ -f "${gomod}" ] && grep -q '^toolchain' "${gomod}"; then
         log "  移除 ${gomod} 中的 toolchain 行"
-        sed -i '/^toolchain/d' "${gomod}"
+        sed_inplace '/^toolchain/d' "${gomod}"
       fi
     done
   fi
@@ -1006,7 +1129,7 @@ install_graftcp() {
         warn "检测到 toolchain 相关错误，尝试移除..."
         for gomod in go.mod local/go.mod; do
           if [ -f "${gomod}" ]; then
-            sed -i '/^toolchain/d' "${gomod}" 2>/dev/null || true
+            sed_inplace '/^toolchain/d' "${gomod}" || true
           fi
         done
       elif tail -20 "${INSTALL_LOG}" | grep -q "permission denied"; then
@@ -1165,7 +1288,7 @@ find_language_server() {
     mapfile -t sorted_lines < <(
       for p in "${candidates[@]}"; do
         local epoch
-        epoch="$(stat -c '%Y' -- "${p}" 2>/dev/null || echo 0)"
+        epoch="$(get_file_mtime "${p}")"
         printf '%s\t%s\n' "${epoch}" "${p}"
       done | sort -rn -k1,1 -k2,2
     )
@@ -1175,9 +1298,9 @@ find_language_server() {
       IFS=$'\t' read -r epoch p <<< "${line}"
 
       if [ -n "${epoch}" ] && echo "${epoch}" | grep -Eq '^[0-9]+$'; then
-        mtime="$(date -d "@${epoch}" '+%F %T %z' 2>/dev/null || stat -c '%y' -- "${p}" 2>/dev/null || echo "unknown")"
+        mtime="$(format_date_from_epoch "${epoch}")"
       else
-        mtime="$(stat -c '%y' -- "${p}" 2>/dev/null || echo "unknown")"
+        mtime="unknown"  # 无法获取 mtime，降级显示
       fi
 
       sorted_candidates+=("${p}")
@@ -1211,7 +1334,7 @@ setup_wrapper() {
   BACKUP_BIN="${TARGET_BIN}.bak"
   
   # Wrapper 脚本的签名标识
-  local WRAPPER_SIGNATURE="# 该文件由 antigravity-set.sh 自动生成"
+  local WRAPPER_SIGNATURE="# 该文件由 antissh.sh 自动生成"
 
   if [ -f "${BACKUP_BIN}" ]; then
     # .bak 文件存在，说明之前执行过脚本
@@ -1263,7 +1386,8 @@ setup_wrapper() {
   fi
 
   # 生成 wrapper 脚本（使用原子写入：先写临时文件，再移动到目标位置）
-  local wrapper_tmp="${TARGET_BIN}.tmp.$$"
+  local wrapper_tmp
+  wrapper_tmp=$(safe_mktemp "${TARGET_BIN}.tmp") || error "无法创建临时文件"
   
   cat > "${wrapper_tmp}" <<EOF
 #!/usr/bin/env bash
