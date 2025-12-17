@@ -1540,9 +1540,40 @@ test_proxy() {
       log "端口 ${GRAFTCP_LOCAL_PORT} 已被 graftcp-local 服务占用"
       log "将停止现有服务并使用新的代理配置重启..."
       
-      # 停止现有的 graftcp-local
+      # 停止现有的 graftcp-local（使用更可靠的方式）
+      log "正在停止旧进程 (PID: ${port_pid})..."
+      
+      # 先发送 SIGTERM 优雅终止
       kill "${port_pid}" 2>/dev/null || true
-      sleep 0.5
+      
+      # 等待进程退出（最多 3 秒）
+      local wait_count=0
+      while [ "${wait_count}" -lt 6 ]; do
+        if ! kill -0 "${port_pid}" 2>/dev/null; then
+          log "进程已成功终止"
+          break
+        fi
+        sleep 0.5
+        wait_count=$((wait_count + 1))
+      done
+      
+      # 如果进程仍在运行，强制终止
+      if kill -0 "${port_pid}" 2>/dev/null; then
+        warn "进程未响应 SIGTERM，发送 SIGKILL 强制终止..."
+        kill -9 "${port_pid}" 2>/dev/null || true
+        sleep 0.5
+      fi
+      
+      # 再次确认端口已释放
+      local port_check_count=0
+      while [ "${port_check_count}" -lt 4 ]; do
+        if ! ss -tln 2>/dev/null | grep -q ":${GRAFTCP_LOCAL_PORT} " && \
+           ! netstat -tln 2>/dev/null | grep -q ":${GRAFTCP_LOCAL_PORT} "; then
+          break
+        fi
+        sleep 0.5
+        port_check_count=$((port_check_count + 1))
+      done
       
       # 用新的代理配置启动 graftcp-local
       if [ "${PROXY_TYPE}" = "http" ]; then
