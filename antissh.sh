@@ -177,8 +177,9 @@ check_port_occupied() {
 
   # ss 不需要 root 就能判断是否占用
   # 使用 awk 进行精确端口匹配，避免正则误匹配（如 22 匹配到 2233）
+  # 支持 IPv4 格式 (如 0.0.0.0:2233) 和 IPv6 格式 (如 [::]:2233)
   if command -v ss >/dev/null 2>&1; then
-    if ss -tln 2>/dev/null | awk -v p="${port}" '$4 ~ ":"p"$" || $4 ~ "\\]":"p"$" {found=1; exit} END {exit !found}'; then
+    if ss -tln 2>/dev/null | awk -v p="${port}" '$4 ~ ":"p"$" || $4 ~ "\\]:"p"$" {found=1; exit} END {exit !found}'; then
       occupied="true"
     fi
   elif command -v netstat >/dev/null 2>&1; then
