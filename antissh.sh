@@ -29,6 +29,8 @@ PROXY_TYPE=""  # socks5 或 http
 GRAFTCP_DIR="${GRAFTCP_DIR:-}" # 保留用户通过环境变量传入的值，空则后续设为 ${REPO_DIR}
 TARGET_BIN=""  # language_server_* 路径
 BACKUP_BIN=""  # 备份路径 = ${TARGET_BIN}.bak
+GRAFTCP_LOCAL_PORT=""  # graftcp-local 监听端口（默认 2233）
+GRAFTCP_PIPE_PATH=""   # graftcp-local FIFO 路径（多实例支持）
 
 ################################ 日志输出 ################################
 
@@ -386,6 +388,92 @@ ask_proxy() {
       echo ""
     fi
   done
+}
+
+################################ graftcp-local 端口配置 ################################
+
+# 询问用户配置 graftcp-local 监听端口
+# 设置全局变量 GRAFTCP_LOCAL_PORT 和 GRAFTCP_PIPE_PATH
+ask_graftcp_port() {
+  local DEFAULT_PORT="2233"
+  
+  echo ""
+  echo "============================================="
+  echo " graftcp-local 端口配置"
+  echo "============================================="
+  echo ""
+  echo "graftcp-local 是代理转发服务，需要监听一个本地端口。"
+  echo "多用户环境下，建议每个用户使用不同的端口避免冲突。"
+  echo ""
+  
+  while true; do
+    read -r -p "请输入端口号（默认 ${DEFAULT_PORT}，直接回车使用默认）: " port_input
+    
+    # 直接回车使用默认端口
+    if [ -z "${port_input}" ]; then
+      port_input="${DEFAULT_PORT}"
+    fi
+    
+    # 校验是否为数字
+    if ! echo "${port_input}" | grep -Eq '^[0-9]+$'; then
+      echo "❌ 错误：端口号必须是数字"
+      echo ""
+      continue
+    fi
+    
+    # 校验端口范围
+    if [ "${port_input}" -lt 1 ] || [ "${port_input}" -gt 65535 ]; then
+      echo "❌ 错误：端口号必须在 1-65535 之间"
+      echo ""
+      continue
+    fi
+    
+    # 检查端口占用情况
+    local port_pid=""
+    local port_process=""
+    
+    if command -v ss >/dev/null 2>&1; then
+      port_pid=$(ss -tlnp 2>/dev/null | grep ":${port_input} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+    elif command -v netstat >/dev/null 2>&1; then
+      port_pid=$(netstat -tlnp 2>/dev/null | grep ":${port_input} " | awk '{print $7}' | cut -d'/' -f1 | head -1)
+    fi
+    
+    if [ -n "${port_pid}" ]; then
+      port_process=$(ps -p "${port_pid}" -o comm= 2>/dev/null || echo "unknown")
+      
+      # 检查是否是 graftcp-local
+      local is_graftcp="false"
+      if [ "${port_process}" = "graftcp-local" ]; then
+        is_graftcp="true"
+      elif ps -p "${port_pid}" -o args= 2>/dev/null | grep -q "graftcp-local"; then
+        is_graftcp="true"
+      fi
+      
+      if [ "${is_graftcp}" = "true" ]; then
+        log "端口 ${port_input} 已被 graftcp-local 服务占用，将复用现有服务"
+        GRAFTCP_LOCAL_PORT="${port_input}"
+        break
+      else
+        echo ""
+        echo "❌ 端口 ${port_input} 已被其他服务占用"
+        echo "   PID: ${port_pid}"
+        echo "   进程: ${port_process}"
+        echo ""
+        echo "请输入其他端口号"
+        continue
+      fi
+    else
+      # 端口未被占用，可以使用
+      log "端口 ${port_input} 可用"
+      GRAFTCP_LOCAL_PORT="${port_input}"
+      break
+    fi
+  done
+  
+  # 设置 FIFO 路径（多实例支持）
+  GRAFTCP_PIPE_PATH="${INSTALL_ROOT}/graftcp-local-${GRAFTCP_LOCAL_PORT}.fifo"
+  
+  log "graftcp-local 将使用端口 ${GRAFTCP_LOCAL_PORT}，FIFO 路径：${GRAFTCP_PIPE_PATH}"
 }
 
 ################################ 轻量级代理可用性探测 ################################
@@ -1185,32 +1273,33 @@ setup_wrapper() {
 GRAFTCP_DIR="${GRAFTCP_DIR}"
 PROXY_URL="${PROXY_URL}"
 PROXY_TYPE="${PROXY_TYPE}"
+GRAFTCP_LOCAL_PORT="${GRAFTCP_LOCAL_PORT}"
+GRAFTCP_PIPE_PATH="${GRAFTCP_PIPE_PATH}"
 LOG_FILE="\$HOME/.graftcp-antigravity/wrapper.log"
 
 mkdir -p "\$(dirname "\$LOG_FILE")"
 echo "[\$(date)] Starting wrapper: \$0 \$@" >> "\$LOG_FILE"
 
-# 检查 graftcp-local 是否已在运行
+# 检查指定 FIFO 路径的 graftcp-local 是否已在运行
+graftcp_running="false"
 if command -v pgrep >/dev/null 2>&1; then
-  if ! pgrep -f "\$GRAFTCP_DIR/local/graftcp-local" >/dev/null 2>&1; then
-    echo "[\$(date)] Starting graftcp-local with \$PROXY_TYPE proxy \$PROXY_URL" >> "\$LOG_FILE"
-    if [ "\$PROXY_TYPE" = "http" ]; then
-      nohup "\$GRAFTCP_DIR/local/graftcp-local" -http_proxy="\$PROXY_URL" -select_proxy_mode=only_http_proxy >/dev/null 2>&1 &
-    else
-      nohup "\$GRAFTCP_DIR/local/graftcp-local" -socks5="\$PROXY_URL" -select_proxy_mode=only_socks5 >/dev/null 2>&1 &
-    fi
-    sleep 0.5
+  if pgrep -f "\$GRAFTCP_PIPE_PATH" >/dev/null 2>&1; then
+    graftcp_running="true"
   fi
 else
-  if ! ps aux | grep -v grep | grep -q "\$GRAFTCP_DIR/local/graftcp-local"; then
-    echo "[\$(date)] Starting graftcp-local with \$PROXY_TYPE proxy \$PROXY_URL" >> "\$LOG_FILE"
-    if [ "\$PROXY_TYPE" = "http" ]; then
-      nohup "\$GRAFTCP_DIR/local/graftcp-local" -http_proxy="\$PROXY_URL" -select_proxy_mode=only_http_proxy >/dev/null 2>&1 &
-    else
-      nohup "\$GRAFTCP_DIR/local/graftcp-local" -socks5="\$PROXY_URL" -select_proxy_mode=only_socks5 >/dev/null 2>&1 &
-    fi
-    sleep 0.5
+  if ps aux | grep -v grep | grep -q "\$GRAFTCP_PIPE_PATH"; then
+    graftcp_running="true"
   fi
+fi
+
+if [ "\$graftcp_running" = "false" ]; then
+  echo "[\$(date)] Starting graftcp-local on port \$GRAFTCP_LOCAL_PORT with \$PROXY_TYPE proxy \$PROXY_URL" >> "\$LOG_FILE"
+  if [ "\$PROXY_TYPE" = "http" ]; then
+    nohup "\$GRAFTCP_DIR/local/graftcp-local" -listen ":\$GRAFTCP_LOCAL_PORT" -pipepath "\$GRAFTCP_PIPE_PATH" -http_proxy="\$PROXY_URL" -select_proxy_mode=only_http_proxy >/dev/null 2>&1 &
+  else
+    nohup "\$GRAFTCP_DIR/local/graftcp-local" -listen ":\$GRAFTCP_LOCAL_PORT" -pipepath "\$GRAFTCP_PIPE_PATH" -socks5="\$PROXY_URL" -select_proxy_mode=only_socks5 >/dev/null 2>&1 &
+  fi
+  sleep 0.5
 fi
 
 # 设置 GODEBUG，保留用户原有值并追加所需配置
@@ -1222,8 +1311,8 @@ else
   export GODEBUG="netdns=cgo,http2client=0,tls13=0"
 fi
 
-# 使用 graftcp 启动备份的原始 Agent 服务
-exec "\$GRAFTCP_DIR/graftcp" "\$0.bak" "\$@"
+# 使用 graftcp 启动备份的原始 Agent 服务（指定端口和 FIFO 路径）
+exec "\$GRAFTCP_DIR/graftcp" -p "\$GRAFTCP_LOCAL_PORT" -f "\$GRAFTCP_PIPE_PATH" "\$0.bak" "\$@"
 EOF
 
   # 设置执行权限
@@ -1254,8 +1343,12 @@ test_proxy() {
   echo " 正在测试代理连通性..."
   echo "============================================="
 
-  # graftcp-local 默认监听端口
-  local GRAFTCP_LOCAL_PORT="2233"
+  # 使用全局变量 GRAFTCP_LOCAL_PORT（在 ask_graftcp_port 中设置）
+  # 确保变量已设置
+  if [ -z "${GRAFTCP_LOCAL_PORT}" ]; then
+    GRAFTCP_LOCAL_PORT="2233"
+    GRAFTCP_PIPE_PATH="${INSTALL_ROOT}/graftcp-local-2233.fifo"
+  fi
   
   # 初始化变量：是否需要在测试结束后关闭 graftcp-local
   local need_kill_graftcp_local="false"
@@ -1301,9 +1394,9 @@ test_proxy() {
       
       # 用新的代理配置启动 graftcp-local
       if [ "${PROXY_TYPE}" = "http" ]; then
-        "${GRAFTCP_DIR}/local/graftcp-local" -http_proxy="${PROXY_URL}" -select_proxy_mode=only_http_proxy &
+        "${GRAFTCP_DIR}/local/graftcp-local" -listen ":${GRAFTCP_LOCAL_PORT}" -pipepath "${GRAFTCP_PIPE_PATH}" -http_proxy="${PROXY_URL}" -select_proxy_mode=only_http_proxy &
       else
-        "${GRAFTCP_DIR}/local/graftcp-local" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
+        "${GRAFTCP_DIR}/local/graftcp-local" -listen ":${GRAFTCP_LOCAL_PORT}" -pipepath "${GRAFTCP_PIPE_PATH}" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
       fi
       graftcp_local_pid=$!
       need_kill_graftcp_local="true"
@@ -1342,9 +1435,9 @@ test_proxy() {
 
     # 启动 graftcp-local
     if [ "${PROXY_TYPE}" = "http" ]; then
-      "${GRAFTCP_DIR}/local/graftcp-local" -http_proxy="${PROXY_URL}" -select_proxy_mode=only_http_proxy &
+      "${GRAFTCP_DIR}/local/graftcp-local" -listen ":${GRAFTCP_LOCAL_PORT}" -pipepath "${GRAFTCP_PIPE_PATH}" -http_proxy="${PROXY_URL}" -select_proxy_mode=only_http_proxy &
     else
-      "${GRAFTCP_DIR}/local/graftcp-local" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
+      "${GRAFTCP_DIR}/local/graftcp-local" -listen ":${GRAFTCP_LOCAL_PORT}" -pipepath "${GRAFTCP_PIPE_PATH}" -socks5="${PROXY_URL}" -select_proxy_mode=only_socks5 &
     fi
     graftcp_local_pid=$!
     need_kill_graftcp_local="true"
@@ -1384,7 +1477,7 @@ test_proxy() {
       sleep 1
     fi
     
-    http_code=$("${GRAFTCP_DIR}/graftcp" curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
+    http_code=$("${GRAFTCP_DIR}/graftcp" -p "${GRAFTCP_LOCAL_PORT}" -f "${GRAFTCP_PIPE_PATH}" curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
     
     # 如果成功，跳出循环
     if [ "${http_code}" = "200" ] || [ "${http_code}" = "301" ] || [ "${http_code}" = "302" ]; then
@@ -1450,6 +1543,7 @@ main() {
 
   check_system
   ask_proxy
+  ask_graftcp_port
   
   # 轻量级探测代理可用性，成功则导出代理环境变量供后续 git/curl 使用（可选增益）
   # 探测失败不影响后续流程，继续走镜像下载策略
@@ -1466,6 +1560,7 @@ main() {
   echo "graftcp 安装目录： ${GRAFTCP_DIR}"
   echo "Agent 备份文件：   ${BACKUP_BIN}"
   echo "当前代理：         ${PROXY_TYPE}://${PROXY_URL}"
+  echo "graftcp-local 端口: ${GRAFTCP_LOCAL_PORT}"
   echo
   echo "如需修改代理："
   echo "  1. 直接重新运行本脚本，按提示输入新的代理地址即可。"

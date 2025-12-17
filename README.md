@@ -39,7 +39,8 @@ flowchart TD
     D -->|跳过| Z2[退出脚本]
     D -->|输入代理| E[解析并校验代理格式]
 
-    E --> F[轻量级代理探测]
+    E --> E1[配置 graftcp-local 端口]
+    E1 --> F[轻量级代理探测]
     F -->|成功| G1[导出 HTTP_PROXY 等环境变量]
     F -->|失败/超时| G2[继续使用镜像下载策略]
 
@@ -77,6 +78,7 @@ flowchart TD
 - 输入代理地址，格式如下：
   - SOCKS5: `socks5://127.0.0.1:10808`
   - HTTP: `http://127.0.0.1:10809`
+- 配置 graftcp-local 监听端口（默认 2233，多用户环境可自定义）
 - 自动安装依赖和编译 graftcp
 - 自动查找并配置 language_server
 
@@ -92,6 +94,24 @@ mv /path/to/language_server_xxx.bak /path/to/language_server_xxx
 
 路径会在脚本执行完成后显示。
 
+### 7. 多用户环境（服务器场景）
+
+graftcp-local 服务需要监听一个本地端口（默认 2233）。在多用户共享服务器环境下，不同用户需要使用不同的端口以避免冲突。
+
+脚本会在运行时询问端口配置：
+
+```
+请输入端口号（默认 2233，直接回车使用默认）: 2234
+```
+
+- **直接回车**：使用默认端口 2233
+- **输入其他端口**：使用指定的端口（如 2234、2235 等）
+
+端口冲突处理：
+
+- 如果端口被其他 graftcp-local 服务占用 → 复用该服务
+- 如果端口被其他进程占用 → 提示重新输入
+
 ### 注意
 
 IDE 升级后可能会在 `~/.antigravity-server/bin/` 下新增版本目录，导致之前配置的代理失效。
@@ -103,6 +123,11 @@ IDE 升级后可能会在 `~/.antigravity-server/bin/` 下新增版本目录，�
    - 进入新目录 `~/.antigravity-server/bin/<新版本号>/extensions/antigravity/bin/`
    - 将 `language_server_linux_*` 重命名为 `language_server_linux_*.bak`
    - 将原目录中的 wrapper 脚本（即之前配置的 `language_server_linux_*`）复制到新目录
+
+### 注意事项
+
+- **端口配置复用**：wrapper 脚本中保存了完整的配置（包括端口）。IDE 升级后，直接将旧 wrapper 复制到新目录即可保持端口配置不变
+- **重新运行脚本**：如果选择重新运行脚本，需要再次输入相同的端口号
 
 ### WSL 网络配置（Mirrored 模式）
 
@@ -185,8 +210,6 @@ export HTTPS_PROXY=http://127.0.0.1:10809
 <a href="https://github.com/ccpopy/antissh/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=ccpopy/antissh" />
 </a>
-
-Made with [contrib.rocks](https://contrib.rocks).
 
 ## Star History
 
