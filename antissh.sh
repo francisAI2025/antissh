@@ -1384,51 +1384,21 @@ find_language_server() {
     TARGET_BIN="${candidates[0]}"
     log "找到 Agent 服务：${TARGET_BIN}"
   else
-    local -a sorted_lines=()
-    local -a sorted_candidates=()
-    local -a sorted_mtimes=()
+    log "检测到多个 language_server 文件，正在自动选择最新版本..."
 
-    # 按文件修改时间排序（从新到旧）
-    mapfile -t sorted_lines < <(
+    # 按文件修改时间排序（从新到旧），并直接提取第一行的路径
+    # stat -c '%Y' 获取 Unix 时间戳
+    TARGET_BIN=$(
       for p in "${candidates[@]}"; do
-        local epoch
-        epoch="$(get_file_mtime "${p}")"
-        printf '%s\t%s\n' "${epoch}" "${p}"
-      done | sort -rn -k1,1 -k2,2
+        printf '%s %s\n' "$(stat -c '%Y' -- "${p}" 2>/dev/null || echo 0)" "${p}"
+      done | sort -rn | head -n 1 | cut -d' ' -f2-
     )
 
-    for line in "${sorted_lines[@]}"; do
-      local epoch p mtime
-      IFS=$'\t' read -r epoch p <<< "${line}"
-
-      if [ -n "${epoch}" ] && echo "${epoch}" | grep -Eq '^[0-9]+$'; then
-        mtime="$(format_date_from_epoch "${epoch}")"
-      else
-        mtime="unknown"  # 无法获取 mtime，降级显示
-      fi
-
-      sorted_candidates+=("${p}")
-      sorted_mtimes+=("${mtime}")
-    done
-
-    candidates=("${sorted_candidates[@]}")
-
-    echo "检测到多个 language_server 可执行文件，请选择要代理的一个："
-    local i=1
-    for p in "${candidates[@]}"; do
-      echo "  [$i] ${sorted_mtimes[$((i-1))]}  ${p}"
-      i=$((i+1))
-    done
-    read -r -p "请输入序号（默认 1）: " idx
-    idx="${idx:-1}"
-    if ! echo "${idx}" | grep -Eq '^[0-9]+$'; then
-      error "输入无效：${idx}"
+    if [ -z "${TARGET_BIN}" ]; then
+      error "自动选择最新 Agent 服务失败，请检查文件权限。"
     fi
-    if [ "${idx}" -lt 1 ] || [ "${idx}" -gt "${#candidates[@]}" ]; then
-      error "输入序号超出范围。"
-    fi
-    TARGET_BIN="${candidates[$((idx-1))]}"
-    log "已选择 Agent 服务：${TARGET_BIN}"
+
+    log "已自动选择最新版本：${TARGET_BIN}"
   fi
 }
 
