@@ -216,12 +216,12 @@ graftcp_running="true"
 fi
 else
 # 使用 ps + grep 作为备用
-if ps aux 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local.*-listen"; then
+if ps -ef 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local.*-listen"; then
 graftcp_running="true"
-if ps aux 2>/dev/null | grep -v grep | grep -Eq "[g]raftcp-local.*-listen[[:space:]]+:${port}([[:space:]]|$)"; then
+if ps -ef 2>/dev/null | grep -v grep | grep -Eq "[g]raftcp-local.*-listen[[:space:]]+:${port}([[:space:]]|$)"; then
 graftcp_with_port="true"
 fi
-elif ps aux 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local"; then
+elif ps -ef 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local"; then
 graftcp_running="true"
 fi
 fi
@@ -1380,66 +1380,25 @@ if [ "${#candidates[@]}" -eq 0 ]; then
 error "仍然没有找到 language_server_* 可执行文件，请检查 antigravity 安装。"
 fi
 
-if [ "${#candidates[@]}" -eq 1 ]; then
-TARGET_BIN="${candidates[0]}"
-log "找到 Agent 服务：${TARGET_BIN}"
-else
-    local -a sorted_lines=()
-    local -a sorted_candidates=()
-    local -a sorted_mtimes=()
+  if [ "${#candidates[@]}" -eq 1 ]; then
+    TARGET_BIN="${candidates[0]}"
+    log "找到 Agent 服务：${TARGET_BIN}"
+  else
     log "检测到多个 language_server 文件，正在自动选择最新版本..."
 
-    # 按文件修改时间排序（从新到旧）
-    mapfile -t sorted_lines < <(
-    # 按文件修改时间排序（从新到旧），并直接提取第一行的路径
-    # stat -c '%Y' 获取 Unix 时间戳
+    # 自动选择最新版本：按文件修改时间排序（从新到旧），取第一个
     TARGET_BIN=$(
-     for p in "${candidates[@]}"; do
-        local epoch
-        epoch="$(get_file_mtime "${p}")"
-        printf '%s\t%s\n' "${epoch}" "${p}"
-      done | sort -rn -k1,1 -k2,2
-        printf '%s %s\n' "$(stat -c '%Y' -- "${p}" 2>/dev/null || echo 0)" "${p}"
+      for p in "${candidates[@]}"; do
+        printf '%s %s\n' "$(get_file_mtime "${p}" 2>/dev/null || echo 0)" "${p}"
       done | sort -rn | head -n 1 | cut -d' ' -f2-
-   )
+    )
 
-    for line in "${sorted_lines[@]}"; do
-      local epoch p mtime
-      IFS=$'\t' read -r epoch p <<< "${line}"
-
-      if [ -n "${epoch}" ] && echo "${epoch}" | grep -Eq '^[0-9]+$'; then
-        mtime="$(format_date_from_epoch "${epoch}")"
-      else
-        mtime="unknown"  # 无法获取 mtime，降级显示
-      fi
-
-      sorted_candidates+=("${p}")
-      sorted_mtimes+=("${mtime}")
-    done
-
-    candidates=("${sorted_candidates[@]}")
-
-    echo "检测到多个 language_server 可执行文件，请选择要代理的一个："
-    local i=1
-    for p in "${candidates[@]}"; do
-      echo "  [$i] ${sorted_mtimes[$((i-1))]}  ${p}"
-      i=$((i+1))
-    done
-    read -r -p "请输入序号（默认 1）: " idx
-    idx="${idx:-1}"
-    if ! echo "${idx}" | grep -Eq '^[0-9]+$'; then
-      error "输入无效：${idx}"
     if [ -z "${TARGET_BIN}" ]; then
       error "自动选择最新 Agent 服务失败，请检查文件权限。"
-fi
-    if [ "${idx}" -lt 1 ] || [ "${idx}" -gt "${#candidates[@]}" ]; then
-      error "输入序号超出范围。"
     fi
-    TARGET_BIN="${candidates[$((idx-1))]}"
-    log "已选择 Agent 服务：${TARGET_BIN}"
 
     log "已自动选择最新版本：${TARGET_BIN}"
-fi
+  fi
 }
 
 ################################ 写入 wrapper ################################
@@ -1551,7 +1510,7 @@ if [ "\$graftcp_running" = "false" ]; then
  else
    nohup "\$GRAFTCP_DIR/local/graftcp-local" -listen ":\$GRAFTCP_LOCAL_PORT" -pipepath "\$GRAFTCP_PIPE_PATH" -socks5="\$PROXY_URL" -select_proxy_mode=only_socks5 >/dev/null 2>&1 &
  fi
- sleep 0.5
+ sleep 0.5 2>/dev/null || sleep 1
 fi
 
 # 设置 GODEBUG，保留用户原有值并追加所需配置
@@ -1828,45 +1787,45 @@ fi
 # 函数名：main
 # 功能：脚本主入口，协调所有配置步骤
 main() {
-echo "==== Antigravity + graftcp 一键配置脚本 ===="
-echo "支持系统：Linux"
-echo "安装日志：${INSTALL_LOG}"
-echo
+  echo "==== Antigravity + graftcp 一键配置脚本 ===="
+  echo "支持系统：Linux"
+  echo "安装日志：${INSTALL_LOG}"
+  echo
 
-check_system
-ask_proxy
-ask_graftcp_port
+  check_system
+  ask_proxy
+  ask_graftcp_port
 
-# 轻量级探测代理可用性，成功则导出代理环境变量供后续 git/curl 使用（可选增益）
-# 探测失败不影响后续流程，继续走镜像下载策略
-probe_and_export_proxy || true
+  # 轻量级探测代理可用性，成功则导出代理环境变量供后续 git/curl 使用（可选增益）
+  # 探测失败不影响后续流程，继续走镜像下载策略
+  probe_and_export_proxy || true
 
-ensure_dependencies
-install_graftcp
-find_language_server
-setup_wrapper
-test_proxy
+  ensure_dependencies
+  install_graftcp
+  find_language_server
+  setup_wrapper
+  test_proxy
 
-echo
-echo "=================== 配置完成 🎉 ==================="
-echo "graftcp 安装目录： ${GRAFTCP_DIR}"
-echo "Agent 备份文件：   ${BACKUP_BIN}"
-echo "当前代理：         ${PROXY_TYPE}://${PROXY_URL}"
-echo "graftcp-local 端口: ${GRAFTCP_LOCAL_PORT}"
-echo
-echo "如需修改代理："
-echo "  1. 直接重新运行本脚本，按提示输入新的代理地址即可。"
-echo "  2. 或手动编辑 wrapper 文件："
-echo "       ${TARGET_BIN}"
-echo "     修改其中的 PROXY_URL 和 PROXY_TYPE 后重启 antigravity。"
-echo
-echo "如需完全恢复原始行为："
-echo "  mv \"${BACKUP_BIN}\" \"${TARGET_BIN}\""
-echo
-echo "安装/编译日志位于：${INSTALL_LOG}"
-echo
-echo "⚠️ 如果是远程连接，请断开并重新连接，即可生效，编码愉快！"
-echo "==================================================="
+  echo
+  echo "=================== 配置完成 🎉 ==================="
+  echo "graftcp 安装目录： ${GRAFTCP_DIR}"
+  echo "Agent 备份文件：   ${BACKUP_BIN}"
+  echo "当前代理：         ${PROXY_TYPE}://${PROXY_URL}"
+  echo "graftcp-local 端口: ${GRAFTCP_LOCAL_PORT}"
+  echo
+  echo "如需修改代理："
+  echo "  1. 直接重新运行本脚本，按提示输入新的代理地址即可。"
+  echo "  2. 或手动编辑 wrapper 文件："
+  echo "       ${TARGET_BIN}"
+  echo "     修改其中的 PROXY_URL 和 PROXY_TYPE 后重启 antigravity。"
+  echo
+  echo "如需完全恢复原始行为："
+  echo "  mv \"${BACKUP_BIN}\" \"${TARGET_BIN}\""
+  echo
+  echo "安装/编译日志位于：${INSTALL_LOG}"
+  echo
+  echo "⚠️ 如果是远程连接，请断开并重新连接，即可生效，编码愉快！"
+  echo "==================================================="
 }
 
 main

@@ -23,9 +23,31 @@ while IFS= read -r line; do
     version_info+="$line"$'\n'
 done
 
-# 解析 Version 和 Commit
-version=$(echo "$version_info" | grep -oP 'Antigravity Version:\s*\K[\d.]+' | head -1)
-commitid=$(echo "$version_info" | grep -oP 'Commit:\s*\K[a-f0-9]+' | head -1)
+# 解析 Version 和 Commit（兼容性处理：优先 grep -oP，不支持则使用 sed）
+parse_version() {
+    local input="$1"
+    # 尝试 grep -oP (GNU grep with Perl regex)
+    if echo "test" | grep -oP 'test' >/dev/null 2>&1; then
+        echo "$input" | grep -oP 'Antigravity Version:\s*\K[\d.]+' | head -1
+    else
+        # 降级到 sed (POSIX 兼容)
+        echo "$input" | sed -n 's/.*Antigravity Version:[[:space:]]*\([0-9.]*\).*/\1/p' | head -1
+    fi
+}
+
+parse_commit() {
+    local input="$1"
+    # 尝试 grep -oP (GNU grep with Perl regex)
+    if echo "test" | grep -oP 'test' >/dev/null 2>&1; then
+        echo "$input" | grep -oP 'Commit:\s*\K[a-f0-9]+' | head -1
+    else
+        # 降级到 sed (POSIX 兼容)
+        echo "$input" | sed -n 's/.*Commit:[[:space:]]*\([a-f0-9]*\).*/\1/p' | head -1
+    fi
+}
+
+version=$(parse_version "$version_info")
+commitid=$(parse_commit "$version_info")
 
 # 验证解析结果
 if [ -z "$version" ] || [ -z "$commitid" ]; then
@@ -77,12 +99,30 @@ fi
 
 cd "$TARGET_DIR" || { echo "无法进入目录"; exit 1; }
 
-# 2. 下载组件包
+# 2. 下载组件包（支持 wget 和 curl 降级）
 echo "正在从 Google 镜像源下载组件..."
-wget -q --show-progress "$DOWNLOAD_URL" -O Antigravity-reh.tar.gz
+download_success=0
+
+if command -v wget >/dev/null 2>&1; then
+    # 使用 wget 下载
+    if wget -q --show-progress "$DOWNLOAD_URL" -O Antigravity-reh.tar.gz; then
+        download_success=1
+    fi
+elif command -v curl >/dev/null 2>&1; then
+    # 降级到 curl 下载
+    echo "wget 不可用，使用 curl 下载..."
+    if curl -# -L "$DOWNLOAD_URL" -o Antigravity-reh.tar.gz; then
+        download_success=1
+    fi
+else
+    echo "[错误] 未找到 wget 或 curl，请先安装其中一个。"
+    echo "  Ubuntu/Debian: sudo apt-get install wget"
+    echo "  CentOS/RHEL:   sudo yum install wget"
+    exit 1
+fi
 
 # 检查下载是否成功
-if [ $? -ne 0 ]; then
+if [ "$download_success" -ne 1 ]; then
     echo "错误：下载失败！请检查网络连接。"
     exit 1
 fi
