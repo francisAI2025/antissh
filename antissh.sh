@@ -18,9 +18,6 @@ INSTALL_ROOT="${HOME}/.graftcp-antigravity"
 REPO_DIR="${INSTALL_ROOT}/graftcp"
 INSTALL_LOG="${INSTALL_ROOT}/install.log"
 
-mkdir -p "${INSTALL_ROOT}"
-touch "${INSTALL_LOG}"
-
 PLATFORM=""
 PM=""          # 包管理器
 SUDO=""        # sudo 命令
@@ -34,8 +31,13 @@ GRAFTCP_PIPE_PATH=""   # graftcp-local FIFO 路径（多实例支持）
 
 ################################ 安全设置 ################################
 
-# 设置 umask 确保新建文件权限安全 (600 for files, 700 for dirs)
+# 设置 umask 确保新建文件权限安全
 umask 077
+
+mkdir -p "${INSTALL_ROOT}"
+chmod 700 "${INSTALL_ROOT}" 2>/dev/null || true
+touch "${INSTALL_LOG}"
+chmod 600 "${INSTALL_LOG}" 2>/dev/null || true
 
 # 临时文件清理函数（在脚本退出时调用）
 # 用于清理可能残留的临时文件
@@ -194,44 +196,43 @@ fi
 
 # 检查是否是 graftcp-local 占用了该端口
 # 策略：
-#   1. 对于默认端口 2233：如果有任何 graftcp-local 进程在运行，就认定是它占用的
-#      （因为旧版 graftcp-local 不带 -listen 参数，使用默认端口 2233）
-#   2. 对于其他端口：检查是否有带 -listen :PORT 参数的 graftcp-local 进程
+#   1. 优先匹配带 -listen :PORT 的 graftcp-local
+#   2. 仅对默认端口 2233：当存在“无 -listen 参数”的旧版 graftcp-local 时，才认为可复用
 
-local graftcp_running="false"
-local graftcp_with_port="false"
+local has_any_graftcp="false"
+local has_any_listen="false"
+local has_listen_port="false"
 
-# 检测是否有任何 graftcp-local 进程在运行
-# 使用更精确的匹配模式，避免误匹配（如 vim graftcp-local.log）
+# 检测 graftcp-local 进程（尽量不依赖 root）
 if command -v pgrep >/dev/null 2>&1; then
-if pgrep -f "graftcp-local.*-listen" >/dev/null 2>&1; then
-graftcp_running="true"
-# 检查是否有指定该端口的进程
-if pgrep -f "graftcp-local.*-listen[[:space:]]+:${port}([[:space:]]|$)" >/dev/null 2>&1; then
-graftcp_with_port="true"
+if pgrep -x "graftcp-local" >/dev/null 2>&1; then
+has_any_graftcp="true"
 fi
-elif pgrep -x "graftcp-local" >/dev/null 2>&1; then
-# 没有 -listen 参数的旧版 graftcp-local（使用默认端口）
-graftcp_running="true"
+if pgrep -f "graftcp-local.*-listen" >/dev/null 2>&1; then
+has_any_listen="true"
+has_any_graftcp="true"
+fi
+if pgrep -f "graftcp-local.*-listen[[:space:]]+:${port}([[:space:]]|$)" >/dev/null 2>&1; then
+has_listen_port="true"
 fi
 else
-# 使用 ps + grep 作为备用
-if ps -ef 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local.*-listen"; then
-graftcp_running="true"
-if ps -ef 2>/dev/null | grep -v grep | grep -Eq "[g]raftcp-local.*-listen[[:space:]]+:${port}([[:space:]]|$)"; then
-graftcp_with_port="true"
+if ps -ef 2>/dev/null | grep -v grep | grep -Eq '(^|[[:space:]])([^[:space:]]*/)?graftcp-local([[:space:]]|$)'; then
+has_any_graftcp="true"
 fi
-elif ps -ef 2>/dev/null | grep -v grep | grep -q "[g]raftcp-local"; then
-graftcp_running="true"
+if ps -ef 2>/dev/null | grep -v grep | grep -Eq '(^|[[:space:]])([^[:space:]]*/)?graftcp-local([[:space:]]|$).* -listen'; then
+has_any_listen="true"
+has_any_graftcp="true"
+fi
+if ps -ef 2>/dev/null | grep -v grep | grep -Eq "([^[:space:]]*/)?graftcp-local([[:space:]]|$).* -listen[[:space:]]+:${port}([[:space:]]|$)"; then
+has_listen_port="true"
 fi
 fi
 
 # 判断端口是否被 graftcp-local 占用
-if [ "${port}" = "2233" ] && [ "${graftcp_running}" = "true" ]; then
-# 默认端口 2233：只要有 graftcp-local 运行就认定是它
+if [ "${has_listen_port}" = "true" ]; then
 PORT_OCCUPIED_BY_GRAFTCP="true"
-elif [ "${graftcp_with_port}" = "true" ]; then
-# 非默认端口：需要明确匹配 -listen :PORT 参数
+elif [ "${port}" = "2233" ] && [ "${has_any_graftcp}" = "true" ] && [ "${has_any_listen}" = "false" ]; then
+# 默认端口 2233：仅当检测到旧版（无 -listen 参数）graftcp-local 进程时，才认为可复用
 PORT_OCCUPIED_BY_GRAFTCP="true"
 fi
 return 0
@@ -1531,6 +1532,8 @@ cat > "${wrapper_tmp}" <<EOF
 #!/usr/bin/env bash
 # 该文件由 antissh.sh 自动生成
 # 用 graftcp 代理启动原始 Antigravity Agent
+
+umask 077
 
 GRAFTCP_DIR="${GRAFTCP_DIR}"
 PROXY_URL="${PROXY_URL}"
