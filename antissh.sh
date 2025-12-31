@@ -1778,7 +1778,7 @@ sleep 1
 fi
 
 # 强制 unset 代理环境变量，防止 curl 直接连接代理导致死循环
-http_code=$("${GRAFTCP_DIR}/graftcp" -p "${GRAFTCP_LOCAL_PORT}" -f "${GRAFTCP_PIPE_PATH}" env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>"${curl_err_file}" || echo "000")
+http_code=$("${GRAFTCP_DIR}/graftcp" -p "${GRAFTCP_LOCAL_PORT}" -f "${GRAFTCP_PIPE_PATH}" env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
 
 # 如果成功，跳出循环
 if [ "${http_code}" = "200" ] || [ "${http_code}" = "301" ] || [ "${http_code}" = "302" ]; then
