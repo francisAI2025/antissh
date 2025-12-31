@@ -1573,8 +1573,8 @@ else
  export GODEBUG="netdns=cgo,http2client=0,tls13=0"
 fi
 
-# 使用 graftcp 启动备份的原始 Agent 服务（指定端口和 FIFO 路径）
-exec "\$GRAFTCP_DIR/graftcp" -p "\$GRAFTCP_LOCAL_PORT" -f "\$GRAFTCP_PIPE_PATH" "\$0.bak" "\$@"
+# 使用 graftcp 启动备份的原始 Agent 服务（指定端口和 FIFO 路径）取消环境变量，防止循环代理
+exec "\$GRAFTCP_DIR/graftcp" -p "\$GRAFTCP_LOCAL_PORT" -f "\$GRAFTCP_PIPE_PATH" env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy "\$0.bak" "\$@"
 EOF
 
 # 设置执行权限
@@ -1777,7 +1777,8 @@ log "第 ${retry_count} 次尝试测试代理..."
 sleep 1
 fi
 
-http_code=$("${GRAFTCP_DIR}/graftcp" -p "${GRAFTCP_LOCAL_PORT}" -f "${GRAFTCP_PIPE_PATH}" curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>/dev/null || echo "000")
+# 强制 unset 代理环境变量，防止 curl 直接连接代理导致死循环
+http_code=$("${GRAFTCP_DIR}/graftcp" -p "${GRAFTCP_LOCAL_PORT}" -f "${GRAFTCP_PIPE_PATH}" env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy curl -s --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "https://www.google.com" 2>"${curl_err_file}" || echo "000")
 
 # 如果成功，跳出循环
 if [ "${http_code}" = "200" ] || [ "${http_code}" = "301" ] || [ "${http_code}" = "302" ]; then
