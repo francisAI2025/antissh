@@ -4,11 +4,11 @@
 
 ## 系统支持
 
-| 系统        | 支持情况      | 说明                           |
-| ----------- | ------------- | ------------------------------ |
-| **Linux**   | 支持          | 使用 graftcp 自动代理（脚本为 Bash，需 Bash >= 4） |
-| **macOS**   | 不支持        | graftcp 依赖 Linux 的 `ptrace`，推荐使用 Proxifier 或 TUN 模式 |
-| **Windows** | 不支持        | 推荐使用 Proxifier 或 TUN 模式；WSL 可按 Linux 方式使用 |
+| 系统        | 支持情况 | 说明                                                           |
+| ----------- | -------- | -------------------------------------------------------------- |
+| **Linux**   | 支持     | 使用 graftcp 自动代理（脚本为 Bash，需 Bash >= 4）             |
+| **macOS**   | 不支持   | graftcp 依赖 Linux 的 `ptrace`，推荐使用 Proxifier 或 TUN 模式 |
+| **Windows** | 不支持   | 推荐使用 Proxifier 或 TUN 模式；WSL 可按 Linux 方式使用        |
 
 ## Linux 使用方法
 
@@ -112,22 +112,36 @@ graftcp-local 服务需要监听一个本地端口（默认 2233）。在多用�
 - 如果端口被其他 graftcp-local 服务占用 → 复用该服务
 - 如果端口被其他进程占用 → 提示重新输入
 
-### 注意
+---
 
-IDE 升级后可能会在 `~/.antigravity-server/bin/` 下新增版本目录，导致之前配置的代理失效。
+## ⚠️ IDE 升级后代理失效问题
 
-**解决方法（二选一）：**
+> [!WARNING]
+> IDE 升级后可能会在 `~/.antigravity-server/bin/` 下新增版本目录，导致之前配置的代理失效。
 
-1. **推荐**：直接重新运行脚本，脚本会自动检测新目录并重新配置
-2. **手动迁移**：
-   - 进入新目录 `~/.antigravity-server/bin/<新版本号>/extensions/antigravity/bin/`
-   - 将 `language_server_linux_*` 重命名为 `language_server_linux_*.bak`
-   - 将原目录中的 wrapper 脚本（即之前配置的 `language_server_linux_*`）复制到新目录
+### 如何获取新版本号
 
-### 注意事项
+1. 打开 Antigravity 客户端
+2. 点击 **Help → About**
+3. 点击 **Copy** 按钮复制版本信息
+4. 在复制的版本信息中找到 `Electron: xxxxxxxxx...` 这一行，其中的哈希值（如 `da3eb231fb10e6dc27750aa465b8582265c907d9`）即为版本号
 
-- **端口配置复用**：wrapper 脚本中保存了完整的配置（包括端口）。IDE 升级后，直接将旧 wrapper 复制到新目录即可保持端口配置不变
-- **重新运行脚本**：如果选择重新运行脚本，需要再次输入相同的端口号
+### 解决方法（二选一）
+
+**方法 1：重新运行脚本（推荐）**
+
+直接重新运行 `antissh.sh`，脚本会自动检测新目录并重新配置。
+
+**方法 2：手动迁移**
+
+1. 进入新目录 `~/.antigravity-server/bin/<新版本号>/extensions/antigravity/bin/`
+2. 将 `language_server_linux_*` 重命名为 `language_server_linux_*.bak`
+3. 将原目录中的 wrapper 脚本复制到新目录
+
+> [!TIP]
+>
+> - **端口配置复用**：wrapper 脚本中保存了完整的配置（包括端口），直接复制即可保持端口配置不变
+> - **重新运行脚本**：如果选择重新运行脚本，需要再次输入相同的端口号
 
 ### WSL 网络配置（Mirrored 模式）
 
@@ -192,6 +206,34 @@ Agent 服务可能无法走代理，仅供参考：
 export ALL_PROXY=socks5://127.0.0.1:10808
 export HTTPS_PROXY=http://127.0.0.1:10809
 ```
+
+---
+
+## Antigravity Server 手动安装脚本
+
+IDE 一般会在远程连接时下载一个.antigravity-server 目录，如果远程服务器无法自动下载 Antigravity Server（如网络受限环境），，可使用 `installAntigravity.sh` 脚本手动安装。
+
+### 下载脚本
+
+```bash
+curl -O https://raw.githubusercontent.com/ccpopy/antissh/main/installAntigravity.sh
+# 或者国内加速下载
+# curl -O https://ghproxy.net/https://raw.githubusercontent.com/ccpopy/antissh/main/installAntigravity.sh
+chmod +x installAntigravity.sh
+```
+
+### 使用方法
+
+1. 运行脚本：`bash ./installAntigravity.sh`
+2. 按提示从 Antigravity 客户端获取版本信息：
+   - 打开 Antigravity 客户端
+   - 点击 **Help → About**
+   - 点击 **Copy** 按钮
+3. 将复制的版本信息粘贴到终端，连续按两次回车
+4. 脚本会自动下载并安装对应版本
+
+> [!NOTE]
+> 此脚本会将组件安装到 `~/.antigravity-server/bin/<commit-id>/` 目录，与 IDE 自动下载的路径一致。
 
 ---
 
